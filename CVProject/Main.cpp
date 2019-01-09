@@ -5,16 +5,8 @@
 
 void runSingle(Mat& imageTrain, Mat& imageTest, const string& modelFilePath = "", const string& trainingRoisFilePath = "")
 {
-	VideoSegmenter::Settings settings;
-	settings.superpixelSize = 15;
-	settings.superpixelCompact = 25; // lower values results in irregular shapes
-	settings.histNbin1d = 16;
-	settings.scaleBROI = 2;
-	settings.fullFrame = false;
-	settings.kernelSVM = ml::SVM::RBF;
-	settings.typeSVM = ml::SVM::C_SVC;
 	//imshow("imageTrain", imageTrain);
-	VideoSegmenter segmenter(settings);
+	VideoSegmenter segmenter(15, 15, 6, false, false);
 	if (trainingRoisFilePath.empty()) {
 		if (modelFilePath.empty()) {
 			segmenter.initialize(imageTrain); // train
@@ -34,7 +26,62 @@ void runSingle(Mat& imageTrain, Mat& imageTest, const string& modelFilePath = ""
 	segmenter.showResults();
 }
 
-void runVideo(const string& videoFilePath, const string& modelFilePath = "", const string& trainingRoisFilePath = "")
+void runWebcam(const string& bgFilePath = "", int superpixelSize = 10)
+{
+	VideoCapture vc(0);
+
+	if (!vc.isOpened())  // check if we succeeded
+		return;
+
+	VideoSegmenter segmenter(superpixelSize, 15, 6, false, false);
+
+	Mat frame;
+	int key = 0;
+	do {
+		vc >> frame;
+		imshow("Camera", frame);
+		key = waitKey(33);
+	} while (key == -1);
+
+	Mat bg;
+	if (!bgFilePath.empty()) {
+		bg = imread(bgFilePath);
+		Size frameSize = frame.size();
+		Size bgSize = bg.size();
+		CV_Assert(bgSize.height >= frameSize.height && bgSize.width >= frameSize.width);
+		bg = bg(Rect((bgSize.width - frameSize.width) / 2, (bgSize.height - frameSize.height) / 2, frameSize.width, frameSize.height));
+	}
+
+	segmenter.initialize(frame); // train
+
+	for (;;)
+	{
+		vc >> frame;
+
+		if (frame.empty()) {
+			return;
+		}
+
+		segmenter.run(frame); // test
+
+		Mat fg = segmenter.getForeground(false);
+		if (!bg.empty()) {
+			Mat newFrame = bg.clone();
+			Mat fgMask;
+			cvtColor(fg, fgMask, COLOR_BGR2GRAY);
+
+			fg.copyTo(newFrame, fgMask);
+			fg = newFrame;
+		}
+		imshow("Camera", frame);
+		imshow("Output", fg);
+		segmenter.cleanUp();
+
+		if (waitKey(1) >= 0) break;
+	}
+}
+
+void runVideo(const string& videoFilePath, const string& modelFilePath = "", const string& trainingRoisFilePath = "", const string& bgFilePath = "", int superpixelSize = 10)
 {
 	VideoCapture vc(videoFilePath);
 
@@ -42,22 +89,19 @@ void runVideo(const string& videoFilePath, const string& modelFilePath = "", con
 		return;
 
 	VideoWriter vw("segmented.mp4", vc.get(CV_CAP_PROP_FOURCC), vc.get(CV_CAP_PROP_FPS), Size(vc.get(CV_CAP_PROP_FRAME_WIDTH), vc.get(CV_CAP_PROP_FRAME_HEIGHT)));
-
-	VideoSegmenter::Settings settings;
-	//settings.superpixelSize = 15;
-	settings.superpixelSize = 10;
-	settings.superpixelCompact = 25; // lower values results in irregular shapes
-	settings.histNbin1d = 16;
-	settings.scaleBROI = 2;
-	settings.fullFrame = false;
-	settings.kernelSVM = ml::SVM::RBF;
-	settings.typeSVM = ml::SVM::C_SVC;
-
-	VideoSegmenter segmenter(settings);
+	VideoSegmenter segmenter(superpixelSize, 15, 6, true, true);
 
 	Mat frame;
-	vc >> frame; // get a new frame from camera
+	vc >> frame;
 
+	Mat bg;
+	if (!bgFilePath.empty()) {
+		bg = imread(bgFilePath);
+		Size frameSize = frame.size();
+		Size bgSize = bg.size();
+		CV_Assert(bgSize.height >= frameSize.height && bgSize.width >= frameSize.width);
+		bg = bg(Rect((bgSize.width - frameSize.width)/2, (bgSize.height - frameSize.height) / 2, frameSize.width, frameSize.height));
+	}
 	
 	if (trainingRoisFilePath.empty()) {
 		if (modelFilePath.empty()) {
@@ -73,7 +117,7 @@ void runVideo(const string& videoFilePath, const string& modelFilePath = "", con
 
 	for (;;)
 	{
-		vc >> frame; // get a new frame from camera
+		vc >> frame;
 
 		if (frame.empty()) {
 			return;
@@ -81,7 +125,16 @@ void runVideo(const string& videoFilePath, const string& modelFilePath = "", con
 
 		segmenter.run(frame); // test
 
-		Mat fg = segmenter.showForeground();
+		Mat fg = segmenter.getForeground(true);
+		if (!bg.empty()) {
+			Mat newFrame = bg.clone();
+			Mat fgMask;
+			cvtColor(fg, fgMask, COLOR_BGR2GRAY);
+
+			fg.copyTo(newFrame, fgMask);
+			fg = newFrame;
+		}
+		//imshow("Output", fg);
 		vw << fg;
 		segmenter.cleanUp();
 
@@ -96,6 +149,13 @@ int main(int argc, char** argv)
 	Mat test = imread("frame1.png");
 	runSingle(train, test, "", "training_selections.txt");*/
 	//runVideo("C:/images/dance.mp4", "", "dance_selections.txt");
-	runVideo("C:/images/dance_cr.mp4", "dance_cr_svm.xml", "");
+	//runVideo("C:/images/dance_cr.mp4");
+	//runVideo("C:/images/me_cr.mp4", "dance_cr_new_svm.xml", "", "C:/images/sponge.jpg");
+	//runVideo("C:/images/kettleman.mp4", "kettleman_svm.xml", "", "C:/images/sponge.jpg");
+	//runVideo("C:/images/catn.mp4", "catn_svm.xml", "", "C:/images/abs.jpg");
+	//runVideo("C:/images/cat3_cr.mp4", "", "", "C:/images/abs.jpg", 20);
+	//runVideo("C:/images/dancer.mkv", "dancer_svm2.xml", "", "");
+
+	runWebcam("C:/images/abs.jpg", 20);
 	return 0;
 }

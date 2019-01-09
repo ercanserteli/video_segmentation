@@ -1,12 +1,23 @@
 #include "VideoSegmentation.hpp"
 #include <iostream>
 #include <fstream>
-//#include "Slic.hpp"
-#include "LambdaParallel.hpp"
 #include <opencv2/ximgproc/slic.hpp>
+#include "LambdaParallel.hpp"
 
 const string VideoSegmenter::trainingWindowName = "Training selection";
 const string VideoSegmenter::testWindowName = "Test results";
+
+void padRect(Rect &rect, int padding, Size2i imgSize) {
+	rect.x -= padding;
+	rect.y -= padding;
+	rect.width += padding;
+	rect.height += padding;
+
+	if (rect.x < 0) rect.x = 0;
+	if (rect.y < 0) rect.y = 0;
+	if (rect.width >= imgSize.width) rect.width = imgSize.width - 1;
+	if (rect.height >= imgSize.height) rect.height = imgSize.height - 1;
+}
 
 // Toggles test overlay
 void onImTestMouse(int event, int x, int y, int flags, void* data)
@@ -27,11 +38,13 @@ void onImTrainMouse(int event, int x, int y, int flags, void* data)
 
 	VideoSegmenter* segmenter = static_cast<VideoSegmenter*>(data);
 	const Size imSize = segmenter->getImageSize();
+	const float scale = segmenter->trainingAnnotationScale;
+	x = x / scale;
+	y = y / scale;
 	if (x < 0 || y < 0 || x >= imSize.width || y >= imSize.height)
 		return;
 
-	Mat trainLabels = segmenter->getTrainLabels();
-	const int label = trainLabels.at<int>(y, x);
+	const int label = segmenter->trainLabels.at<int>(y, x);
 	bool needRedraw = false;
 	if (event == EVENT_MBUTTONDOWN) {
 		needRedraw = segmenter->setSuperpixelLabel(label, 0, Vec3b(0, 0, 0));
@@ -58,11 +71,10 @@ void onImTrainMouse(int event, int x, int y, int flags, void* data)
 }
 
 // Creates Superpixel objects from existing SLIC superpixels, fills the given vector
-void fillSuperpixelVector(Slic& slic, vector<Superpixel>& superpixels, Mat& imageBGR, const int nBin1d)
+void fillSuperpixelVector(Ptr<SuperpixelSLIC> slic, Mat& labels, vector<Superpixel>& superpixels, Mat& imageBGR, const int nBin1d)
 {
-	const int Nspx = slic.getNbSpx();
+	const int Nspx = slic->getNumberOfSuperpixels();
 	superpixels.resize(Nspx);
-	const Mat labels = slic.getLabels();
 	for (int i = 0; i < labels.rows; i++) {
 		const Vec3b* image_ptr = imageBGR.ptr<Vec3b>(i);
 		const int* label_ptr = labels.ptr<int>(i);
@@ -79,7 +91,7 @@ void fillSuperpixelVector(Slic& slic, vector<Superpixel>& superpixels, Mat& imag
 			superpixels[i].image = imageBGR;
 			superpixels[i].imageGray = imageGray;
 			superpixels[i].id = i;
-			superpixels[i].labels = slic.getLabels();
+			superpixels[i].labels = labels;
 			superpixels[i].computeFeatures(nBin1d);
 		}
 	});
@@ -117,22 +129,22 @@ Mat createFeatMat(vector<Superpixel*>& superpixels)
 	return featsMat;
 }
 
-void trainSVM(Ptr<ml::SVM>& svm, vector<Superpixel>& superpixels, ml::SVM::Types svmType, ml::SVM::KernelTypes kernelType)
+void trainSVM(Ptr<ml::SVM>& svm, vector<Superpixel>& superpixels)
 {
 	CV_Assert(!superpixels.empty());
-	svm->setType(svmType);
-	svm->setKernel(kernelType);
+	svm->setType(ml::SVM::C_SVC);
+	svm->setKernel(ml::SVM::RBF);
 	svm->setTermCriteria(TermCriteria(TermCriteria::MAX_ITER, 100, 1e-6));
-	vector<Superpixel*> superpixels_ptr;
+	vector<Superpixel*> superpixel_ptrs;
 	for (int i = 0; i < superpixels.size(); i++) {
 		if (superpixels[i].classLabel != 0) {
-			superpixels_ptr.push_back(&superpixels[i]);
+			superpixel_ptrs.push_back(&superpixels[i]);
 		}
 	}
-	const Mat fbSpxFeatMat = createFeatMat(superpixels_ptr);
-	const Mat labelsMat = createLabelsMat(superpixels_ptr);
+	const Mat fbSpxFeatMat = createFeatMat(superpixel_ptrs);
+	const Mat labelsMat = createLabelsMat(superpixel_ptrs);
 	const Ptr<ml::TrainData> tdata = ml::TrainData::create(fbSpxFeatMat, ml::ROW_SAMPLE, labelsMat);
-	svm->trainAuto(tdata);
+	svm->trainAuto(tdata, 10);
 }
 
 bool VideoSegmenter::setSuperpixelLabel(int i, int label, Vec3b overlayColor)
@@ -155,15 +167,34 @@ void VideoSegmenter::showImTrain() const
 
 	addWeighted(imTrain, 0.5, imTrainOverlay, 0.5, 0, result);
 	imTrain.copyTo(result, overlayMask);
+
+	resize(result, result, Size(), trainingAnnotationScale, trainingAnnotationScale);
 	imshow(trainingWindowName, result);
 }
 
-VideoSegmenter::VideoSegmenter(const Settings& settings)
+VideoSegmenter::VideoSegmenter(int superpixelSize, int superpixelCompactness, int histoNbin1d, bool noiseReduction, bool spatialMomentum)
 {
-	pSlicTrain = make_unique<Slic>();
-	pSlicTest = make_unique<Slic>();
 	SVMClassifier = ml::SVM::create();
-	this->settings = settings;
+	this->superpixelSize = superpixelSize;
+	this->superpixelRuler = superpixelCompactness;
+	this->histoNbin1d = histoNbin1d;
+	this->noiseReductionEnabled = noiseReduction;
+	this->spatialMomentumEnabled = spatialMomentum;
+}
+
+void VideoSegmenter::startTrainingAnnotation() {
+	int dim = MAX(imTrain.rows, imTrain.cols);
+	if (dim < 500) {
+		trainingAnnotationScale = 2;
+	}
+	else if(dim < 750){
+		trainingAnnotationScale = 1.5;
+	}
+	else {
+		trainingAnnotationScale = 1;
+	}
+	showImTrain();
+	setMouseCallback(trainingWindowName, onImTrainMouse, static_cast<void*>(this));
 }
 
 void VideoSegmenter::initialize(Mat& imTrain)
@@ -171,53 +202,63 @@ void VideoSegmenter::initialize(Mat& imTrain)
 	CV_Assert(imTrain.data != nullptr);
 
 	this->imTrain = imTrain;
-	prevForegroundMap = Mat::zeros(imTrain.size(), CV_32FC1);
 	//imshow("imTrain", imTrain);
 	imTrainOverlay = Mat::zeros(this->imTrain.size(), CV_8UC3);
 
 	//Superpixel segmentation
-	pSlicTrain->initialize(this->imTrain, settings.superpixelSize, settings.superpixelCompact, 10, Slic::SLIC_SIZE);
-	pSlicTrain->generateSpx(this->imTrain);
+	slicTrain = createSuperpixelSLIC(this->imTrain, SLICO, superpixelSize, superpixelRuler);
+	slicTrain->iterate(10);
+	slicTrain->getLabels(trainLabels);
 
 	//Create Superpixel vector from slic
-	fillSuperpixelVector(*pSlicTrain, superpixelsTrain, this->imTrain);
+	fillSuperpixelVector(slicTrain, trainLabels, superpixelsTrain, this->imTrain, histoNbin1d);
 
-	pSlicTrain->display_contours(this->imTrain);
+	//Painting contours
+	Mat contours;
+	slicTrain->getLabelContourMask(contours);
+	this->imTrain.setTo(Vec3b(0, 0, 255), contours);
 
-	imshow(trainingWindowName, this->imTrain);
-	setMouseCallback(trainingWindowName, onImTrainMouse, static_cast<void*>(this));
+	startTrainingAnnotation();
 	//Wait til annotating is over
 	waitKey();
 	//Annotating is over
 	setMouseCallback(trainingWindowName, nullptr);
 
-	//Paint prevForegroundMap
-	Mat prevForegroundMask = Mat::zeros(imTest.size(), CV_8UC1);
-	for (int i = 0; i < superpixelsTrain.size(); i++) {
-		if (superpixelsTrain[i].classLabel == 1) {
-			superpixelsTrain[i].colorize(prevForegroundMask, Vec3b(255, 255, 255));
+	if (spatialMomentumEnabled) {
+		//Paint prevForegroundMap
+		Mat foregroundMask = Mat::zeros(imTrain.size(), CV_8UC1);
+		for (int i = 0; i < superpixelsTrain.size(); i++) {
+			if (superpixelsTrain[i].classLabel == 1) {
+				superpixelsTrain[i].colorize(foregroundMask, Vec3b(255, 255, 255));
+			}
 		}
+		erode(~foregroundMask, prevBackgroundMap, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)), Point(-1, -1), 2);
+		erode(foregroundMask, prevForegroundMap, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)), Point(-1, -1), 2);
 	}
-	dilate(prevForegroundMask, prevForegroundMask, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)));
-	distanceTransform(prevForegroundMask, prevForegroundMap, DIST_L2, 3, CV_32F);
 
+	int count1 = 0, count2 = 0;
 	//Save inputs to file
 	ofstream ofs("training_selections.txt");
 	for (int i = 0; i < superpixelsTrain.size(); i++) {
 		if (superpixelsTrain[i].classLabel == 2) {
 			ofs << i << endl;
+			++count1;
 		}
 	}
 	ofs << "hede" << endl;
 	for (int i = 0; i < superpixelsTrain.size(); i++) {
 		if (superpixelsTrain[i].classLabel == 1) {
 			ofs << i << endl;
+			++count2;
 		}
 	}
 	ofs.close();
 
+	//There must be training samples for both classes
+	CV_Assert(count1 > 0 && count2 > 0);
+
 	//Train a classifier
-	trainSVM(SVMClassifier, superpixelsTrain, settings.typeSVM, settings.kernelSVM);
+	trainSVM(SVMClassifier, superpixelsTrain);
 	SVMClassifier->save("svm.xml");
 }
 
@@ -227,15 +268,15 @@ void VideoSegmenter::loadTrainInputsFromFile(Mat& imTrain, const std::string &in
 	CV_Assert(imTrain.data != nullptr);
 
 	this->imTrain = imTrain;
-	prevForegroundMap = Mat::zeros(imTrain.size(), CV_32FC1);
 	imTrainOverlay = Mat::zeros(this->imTrain.size(), CV_8UC3);
 
 	//Superpixel segmentation
-	pSlicTrain->initialize(this->imTrain, settings.superpixelSize, settings.superpixelCompact, 10, Slic::SLIC_SIZE);
-	pSlicTrain->generateSpx(this->imTrain);
+	slicTrain = createSuperpixelSLIC(this->imTrain, SLICO, superpixelSize, superpixelRuler);
+	slicTrain->iterate(10);
+	slicTrain->getLabels(trainLabels);
 
 	//Create Superpixel vector from slic
-	fillSuperpixelVector(*pSlicTrain, superpixelsTrain, this->imTrain);
+	fillSuperpixelVector(slicTrain, trainLabels, superpixelsTrain, this->imTrain, histoNbin1d);
 
 	ifstream ifs(inputPath);
 	string line;
@@ -256,18 +297,19 @@ void VideoSegmenter::loadTrainInputsFromFile(Mat& imTrain, const std::string &in
 		}
 		ifs.close();
 	}
-
-	//Paint prevForegroundMap
-	Mat prevForegroundMask = Mat::zeros(imTest.size(), CV_8UC1);
-	for (int i = 0; i < superpixelsTrain.size(); i++) {
-		if(superpixelsTrain[i].classLabel == 1){
-			superpixelsTrain[i].colorize(prevForegroundMask, Vec3b(255, 255, 255));
+	if (spatialMomentumEnabled) {
+		//Paint prevForegroundMap
+		Mat foregroundMask = Mat::zeros(imTrain.size(), CV_8UC1);
+		for (int i = 0; i < superpixelsTrain.size(); i++) {
+			if (superpixelsTrain[i].classLabel == 1) {
+				superpixelsTrain[i].colorize(foregroundMask, Vec3b(255, 255, 255));
+			}
 		}
+		erode(~foregroundMask, prevBackgroundMap, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)), Point(-1, -1), 2);
+		erode(foregroundMask, prevForegroundMap, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)), Point(-1, -1), 2);
 	}
-	dilate(prevForegroundMask, prevForegroundMask, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)));
-	distanceTransform(prevForegroundMask, prevForegroundMap, DIST_L2, 3, CV_32F);
 
-	trainSVM(SVMClassifier, superpixelsTrain, settings.typeSVM, settings.kernelSVM);
+	trainSVM(SVMClassifier, superpixelsTrain);
 }
 
 void VideoSegmenter::loadPretrainedModel(const std::string &inputPath)
@@ -280,30 +322,73 @@ void VideoSegmenter::run(Mat& imTest)
 {
 	CV_Assert(imTest.data != nullptr);
 
-	if (prevForegroundMap.empty()) {
-		prevForegroundMap = Mat::zeros(imTest.size(), CV_32FC1);
+	if (spatialMomentumEnabled) {
+		if (prevForegroundMap.empty()) {
+			prevForegroundMap = Mat::zeros(imTest.size(), CV_32FC1);
+		}
+		if (prevBackgroundMap.empty()) {
+			prevBackgroundMap = Mat::zeros(imTest.size(), CV_32FC1);
+		}
 	}
 
 	this->imTest = imTest;
 	imTestOverlay = Mat::zeros(this->imTest.size(), CV_8UC3);
 
-	pSlicTest->initialize(this->imTest, settings.superpixelSize, settings.superpixelCompact, 10, Slic::SLIC_SIZE);
-	pSlicTest->generateSpx(this->imTest);
+	//Superpixel segmentation on the test image
+	slicTest = createSuperpixelSLIC(this->imTest, MSLIC, superpixelSize, superpixelRuler);
+	slicTest->iterate(10);
+	Mat testLabels;
+	slicTest->getLabels(testLabels);
 
-	fillSuperpixelVector(*pSlicTest, superpixelsTest, this->imTest);
-	imshow("prevForegroundMap", prevForegroundMap);
-
-	Mat prevForegroundMask = Mat::zeros(imTest.size(), CV_8UC1);
+	//Create Superpixel vector from slic
+	fillSuperpixelVector(slicTest, testLabels, superpixelsTest, this->imTest, histoNbin1d);
+	
+	Mat foregroundMask = Mat::zeros(imTest.size(), CV_8UC1);
 	for (int i = 0; i < superpixelsTest.size(); i++) {
-		float response = SVMClassifier->predict(superpixelsTest[i].getFeatMat());
-		superpixelsTest[i].classLabel = static_cast<uchar>(static_cast<int>(response));
-		if(superpixelsTest[i].classLabel == 1){
-			superpixelsTest[i].colorize(prevForegroundMask, Vec3b(255, 255, 255));
+		//float response = SVMClassifier->predict(superpixelsTest[i].getFeatMat());
+		float responseRaw = SVMClassifier->predict(superpixelsTest[i].getFeatMat(), noArray(), ml::StatModel::RAW_OUTPUT);
+		if (spatialMomentumEnabled) {
+			responseRaw += prevForegroundMap.at<uchar>(superpixelsTest[i].centroid)*0.25 - prevBackgroundMap.at<uchar>(superpixelsTest[i].centroid)*0.25;
+		}
+		uchar label = (responseRaw > 0 ? 1 : 2);
+		superpixelsTest[i].classLabel = label;
+		if (superpixelsTest[i].classLabel == 1) {
+			superpixelsTest[i].colorize(foregroundMask, Vec3b(255, 255, 255));
 		}
 	}
 
-	dilate(prevForegroundMask, prevForegroundMask, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)));
-	distanceTransform(prevForegroundMask, prevForegroundMap, DIST_L2, 3, CV_32F);
+	if (noiseReductionEnabled) {
+		Mat kernel = getStructuringElement(CV_SHAPE_ELLIPSE, Size(3, 3));
+		for (int i = 0; i < superpixelsTest.size(); i++) {
+			Rect bounds = superpixelsTest[i].bounds;
+			padRect(bounds, 1, imTest.size());
+			Mat mask = (testLabels(bounds) == i);
+			Mat maskBorders;
+			dilate(mask, maskBorders, kernel);
+			addWeighted(maskBorders, 1, mask, -1, 0, maskBorders);
+			if (superpixelsTest[i].classLabel == 1) {
+				int count = countNonZero(foregroundMask(bounds) & maskBorders);
+				if (count <= 2) {
+					superpixelsTest[i].classLabel = 2;
+					superpixelsTest[i].colorize(foregroundMask, Vec3b(0, 0, 0));
+				}
+			}
+			else {
+				int count = countNonZero(~(foregroundMask(bounds)) & maskBorders);
+				if (count <= 1) {
+					superpixelsTest[i].classLabel = 1;
+					superpixelsTest[i].colorize(foregroundMask, Vec3b(255, 255, 255));
+				}
+			}
+		}
+	}
+	if (spatialMomentumEnabled) {
+		//dilate(prevForegroundMask, prevForegroundMask, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)), Point(-1, -1), 3);
+		//distanceTransform(prevForegroundMask, prevForegroundMap, DIST_L2, 3, CV_32F);
+		erode(~foregroundMask, prevBackgroundMap, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)), Point(-1, -1), 2);
+		erode(foregroundMask, prevForegroundMap, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)), Point(-1, -1), 2);
+		//normalize(prevForegroundMap, prevForegroundMap, -0.5, 0.5, NORM_MINMAX);
+	}
 }
 
 void VideoSegmenter::showResults()
@@ -314,7 +399,11 @@ void VideoSegmenter::showResults()
 		else if (superpixelsTest[i].classLabel == 2)superpixelsTest[i].colorize(imTestOverlay, Vec3b(0, 0, 255));
 		else if (superpixelsTest[i].classLabel == 3)superpixelsTest[i].colorize(imTestOverlay, Vec3b(255, 0, 0));
 	}
-	pSlicTest->display_contours(imTestOverlay);
+
+	//Painting contours
+	Mat contours;
+	slicTest->getLabelContourMask(contours);
+	imTestOverlay.setTo(Vec3b(0, 0, 255), contours);
 	showImTest();
 	setMouseCallback(testWindowName, onImTestMouse, static_cast<void*>(this));
 
@@ -338,13 +427,15 @@ void VideoSegmenter::showImTest() const
 	}
 }
 
-Mat VideoSegmenter::showForeground() const
+Mat VideoSegmenter::getForeground(bool show) const
 {
 	Mat foreground = imTest.clone();
 	for (int i = 0; i < superpixelsTest.size(); i++) {
 		if (superpixelsTest[i].classLabel != 1)superpixelsTest[i].colorize(foreground, Vec3b(0, 0, 0));
 	}
-	imshow(testWindowName, foreground);
+	if (show) {
+		imshow(testWindowName, foreground);
+	}
 	return foreground;
 }
 

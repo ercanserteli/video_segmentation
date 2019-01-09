@@ -10,11 +10,11 @@ class Pixel
 {
 public:
 
-	Point xy;
+	Point pos;
 	Vec3f color;
 
-	Pixel():xy(Point(-1, -1)), color(Vec3f(0, 0, 0)){}
-	Pixel(Point xy, Vec3f color) :xy(xy), color(color){}
+	Pixel():pos(Point(-1, -1)), color(Vec3f(0, 0, 0)){}
+	Pixel(Point pos, Vec3f color) :pos(pos), color(color){}
 };
 class Superpixel
 {
@@ -29,6 +29,7 @@ public:
 	Mat imageGray;
 	Mat labels;
 	Rect bounds;
+	Point centroid;
 	int id;
 	uchar classLabel = 0;
 

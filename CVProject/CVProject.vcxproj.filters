@@ -15,9 +15,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Slic.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="Superpixel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -29,9 +26,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Slic.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="Superpixel.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>

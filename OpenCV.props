@@ -10,8 +10,8 @@
       <AdditionalIncludeDirectories>C:\opencv_manual\opencv_build\install\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>C:\opencv\build\x64\vc14\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>opencv_world343.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\opencv_manual\opencv_build\install\x86\vc15\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>opencv_core345.lib;opencv_imgproc345.lib;opencv_video345.lib;opencv_videoio345.lib;opencv_ximgproc345.lib;opencv_ml345.lib;opencv_highgui345.lib;opencv_imgcodecs345.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup />

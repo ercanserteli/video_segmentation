@@ -14,13 +14,15 @@ void Superpixel::computeMeanAndBounds() {
 	if (pixels.size() != 0) {
 		int minX = INT_MAX, minY = INT_MAX, maxX = 0, maxY = 0;
 		for (const Pixel px : pixels) {
-			if (px.xy.x < minX) minX = px.xy.x;
-			if (px.xy.x > maxX) maxX = px.xy.x;
-			if (px.xy.y < minY) minY = px.xy.y;
-			if (px.xy.y > maxY) maxY = px.xy.y;
+			if (px.pos.x < minX) minX = px.pos.x;
+			if (px.pos.x > maxX) maxX = px.pos.x;
+			if (px.pos.y < minY) minY = px.pos.y;
+			if (px.pos.y > maxY) maxY = px.pos.y;
 			meanColor += px.color;
+			centroid += px.pos;
 		}
 		meanColor /= static_cast<float>(pixels.size());
+		centroid /= static_cast<float>(pixels.size());
 		bounds = Rect(minX, minY, maxX - minX + 1, maxY - minY + 1);
 	}
 }
@@ -67,8 +69,8 @@ void Superpixel::computeLBPHisto()
 	lbpHisto = Mat::zeros(256, 1, CV_32FC1);
 	for (int j = 0; j < pixels.size(); j++)
 	{
-		const int x = pixels[j].xy.x;
-		const int y = pixels[j].xy.y;
+		const int x = pixels[j].pos.x;
+		const int y = pixels[j].pos.y;
 
 		if (x > 0 && y > 0 && x < imageGray.cols - 1 && y < imageGray.rows - 1) {
 			const uchar val = imageGray.at<uchar>(y, x);
