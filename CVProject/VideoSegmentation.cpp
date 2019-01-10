@@ -184,10 +184,10 @@ VideoSegmenter::VideoSegmenter(int superpixelSize, int superpixelCompactness, in
 
 void VideoSegmenter::startTrainingAnnotation() {
 	int dim = MAX(imTrain.rows, imTrain.cols);
-	if (dim < 500) {
+	if (dim < 360) {
 		trainingAnnotationScale = 2.f;
 	}
-	else if(dim < 750){
+	else if(dim < 500){
 		trainingAnnotationScale = 1.5f;
 	}
 	else {
