@@ -30,8 +30,10 @@ void runWebcam(const string& bgFilePath = "", int superpixelSize = 10)
 {
 	VideoCapture vc(0);
 
-	if (!vc.isOpened())  // check if we succeeded
+	if (!vc.isOpened()) {  // check if we succeeded
+		cerr << "VideoCapture could not be opened" << endl;
 		return;
+	}
 
 	VideoSegmenter segmenter(superpixelSize, 15, 6, false, false);
 
@@ -85,9 +87,10 @@ void runVideo(const string& videoFilePath, const string& modelFilePath = "", con
 {
 	VideoCapture vc(videoFilePath);
 
-	if (!vc.isOpened())  // check if we succeeded
+	if (!vc.isOpened()) {  // check if we succeeded
+		cerr << "VideoCapture could not be opened" << endl;
 		return;
-
+	}
 	VideoWriter vw("segmented.mp4", vc.get(CV_CAP_PROP_FOURCC), vc.get(CV_CAP_PROP_FPS), Size(vc.get(CV_CAP_PROP_FRAME_WIDTH), vc.get(CV_CAP_PROP_FRAME_HEIGHT)));
 	VideoSegmenter segmenter(superpixelSize, 15, 6, true, true);
 
@@ -148,14 +151,14 @@ int main(int argc, char** argv)
 	/*Mat train = imread("frame0.png");
 	Mat test = imread("frame1.png");
 	runSingle(train, test, "", "training_selections.txt");*/
-	//runVideo("C:/images/dance.mp4", "", "dance_selections.txt");
-	//runVideo("C:/images/dance_cr.mp4");
+	//runVideo("C:/images/me_cr.mp4");
 	//runVideo("C:/images/me_cr.mp4", "dance_cr_new_svm.xml", "", "C:/images/sponge.jpg");
 	//runVideo("C:/images/kettleman.mp4", "kettleman_svm.xml", "", "C:/images/sponge.jpg");
 	//runVideo("C:/images/catn.mp4", "catn_svm.xml", "", "C:/images/abs.jpg");
 	//runVideo("C:/images/cat3_cr.mp4", "", "", "C:/images/abs.jpg", 20);
 	//runVideo("C:/images/dancer.mkv", "dancer_svm2.xml", "", "");
 
-	runWebcam("C:/images/abs.jpg", 20);
+	runWebcam("", 20);
+	//runWebcam("C:/images/abs.jpg", 20);
 	return 0;
 }
