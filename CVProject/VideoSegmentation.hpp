@@ -28,14 +28,16 @@ public:
 	void showImTrain() const;
 	void showImTest() const;
 	Mat getForeground(bool show) const;
+	Mat getForegroundMask() { return foregroundMask; }
 	void cleanUp();
 	void toggleTestOverlay() { showTestOverlay = !showTestOverlay; }
-	VideoSegmenter(int superpixelSize, int superpixelRuler, int histoNbin1d, bool noiseReduction, bool spatialMomentum);
+	VideoSegmenter(int superpixelSize, int superpixelRuler, int histoNbin1d, bool noiseReduction, bool temporalMomentum);
 	~VideoSegmenter() {}
 
 	void loadTrainInputsFromFile(Mat& imTrain, const std::string &inputPath);
 	void loadPretrainedModel(const std::string &inputPath);
 	void initialize(Mat& imTrain);
+	void initialize(Mat& imTrain, Mat& annotationMask);
 	void run(Mat& imTest);
 	void showResults();
 	void startTrainingAnnotation();
@@ -52,10 +54,11 @@ private:
 	Mat imTestOverlay;
 	Mat prevForegroundMap;
 	Mat prevBackgroundMap;
+	Mat foregroundMask;
 	bool showTestOverlay = true;
 	int superpixelSize = 15;
 	int superpixelRuler = 25;
 	int histoNbin1d = 6;
 	bool noiseReductionEnabled = false;
-	bool spatialMomentumEnabled = false;
+	bool temporalMomentumEnabled = false;
 };

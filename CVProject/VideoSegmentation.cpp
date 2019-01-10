@@ -10,13 +10,13 @@ const string VideoSegmenter::testWindowName = "Test results";
 void padRect(Rect &rect, int padding, Size2i imgSize) {
 	rect.x -= padding;
 	rect.y -= padding;
-	rect.width += padding;
-	rect.height += padding;
+	rect.width += padding*2;
+	rect.height += padding*2;
 
 	if (rect.x < 0) rect.x = 0;
 	if (rect.y < 0) rect.y = 0;
-	if (rect.width >= imgSize.width) rect.width = imgSize.width - 1;
-	if (rect.height >= imgSize.height) rect.height = imgSize.height - 1;
+	if (rect.x + rect.width >= imgSize.width) rect.width = imgSize.width - rect.x - 1;
+	if (rect.y + rect.height >= imgSize.height) rect.height = imgSize.height - rect.y - 1;
 }
 
 // Toggles test overlay
@@ -179,24 +179,107 @@ VideoSegmenter::VideoSegmenter(int superpixelSize, int superpixelCompactness, in
 	this->superpixelRuler = superpixelCompactness;
 	this->histoNbin1d = histoNbin1d;
 	this->noiseReductionEnabled = noiseReduction;
-	this->spatialMomentumEnabled = spatialMomentum;
+	this->temporalMomentumEnabled = spatialMomentum;
 }
 
 void VideoSegmenter::startTrainingAnnotation() {
 	int dim = MAX(imTrain.rows, imTrain.cols);
 	if (dim < 500) {
-		trainingAnnotationScale = 2;
+		trainingAnnotationScale = 2.f;
 	}
 	else if(dim < 750){
-		trainingAnnotationScale = 1.5;
+		trainingAnnotationScale = 1.5f;
 	}
 	else {
-		trainingAnnotationScale = 1;
+		trainingAnnotationScale = 1.f;
 	}
 	showImTrain();
 	setMouseCallback(trainingWindowName, onImTrainMouse, static_cast<void*>(this));
+	int key;
+	while (true) {
+		key = waitKey();
+		if (key == 13) {
+			break; 
+		}
+		else if (key == 102) {
+			for (int i = 0; i < superpixelsTrain.size(); i++) {
+				if (superpixelsTrain[i].classLabel == 0) {
+					setSuperpixelLabel(i, 2, Vec3b(0, 0, 255));
+				}
+			}
+			showImTrain();
+		}
+	}
 }
 
+void VideoSegmenter::initialize(Mat& imTrain, Mat& annotationMask)
+{
+	CV_Assert(imTrain.data != nullptr);
+
+	this->imTrain = imTrain;
+	//imshow("imTrain", imTrain);
+	imTrainOverlay = Mat::zeros(this->imTrain.size(), CV_8UC3);
+
+	//Superpixel segmentation
+	slicTrain = createSuperpixelSLIC(this->imTrain, SLICO, superpixelSize, superpixelRuler);
+	slicTrain->iterate(10);
+	slicTrain->getLabels(trainLabels);
+
+	//Create Superpixel vector from slic
+	fillSuperpixelVector(slicTrain, trainLabels, superpixelsTrain, this->imTrain, histoNbin1d);
+
+	//Painting contours
+	Mat contours;
+	slicTrain->getLabelContourMask(contours);
+	this->imTrain.setTo(Vec3b(0, 0, 255), contours);
+
+	for (int i = 0; i < superpixelsTrain.size(); i++) {
+		if (annotationMask.at<uchar>(superpixelsTrain[i].centroid) > 0) {
+			superpixelsTrain[i].classLabel = 1;
+		}
+		else {
+			superpixelsTrain[i].classLabel = 2;
+		}
+	}
+
+	if (temporalMomentumEnabled) {
+		//Paint prevForegroundMap
+		foregroundMask = Mat::zeros(imTrain.size(), CV_8UC1);
+		for (int i = 0; i < superpixelsTrain.size(); i++) {
+			if (superpixelsTrain[i].classLabel == 1) {
+				superpixelsTrain[i].colorize(foregroundMask, Vec3b(255, 255, 255));
+			}
+		}
+		erode(~foregroundMask, prevBackgroundMap, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)), Point(-1, -1), 2);
+		erode(foregroundMask, prevForegroundMap, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)), Point(-1, -1), 2);
+	}
+	
+
+	int count1 = 0, count2 = 0;
+	//Save inputs to file
+	ofstream ofs("training_selections.txt");
+	for (int i = 0; i < superpixelsTrain.size(); i++) {
+		if (superpixelsTrain[i].classLabel == 2) {
+			ofs << i << endl;
+			++count1;
+		}
+	}
+	ofs << "hede" << endl;
+	for (int i = 0; i < superpixelsTrain.size(); i++) {
+		if (superpixelsTrain[i].classLabel == 1) {
+			ofs << i << endl;
+			++count2;
+		}
+	}
+	ofs.close();
+
+	//There must be training samples for both classes
+	CV_Assert(count1 > 0 && count2 > 0);
+
+	//Train a classifier
+	trainSVM(SVMClassifier, superpixelsTrain);
+	SVMClassifier->save("svm.xml");
+}
 void VideoSegmenter::initialize(Mat& imTrain)
 {
 	CV_Assert(imTrain.data != nullptr);
@@ -218,15 +301,14 @@ void VideoSegmenter::initialize(Mat& imTrain)
 	slicTrain->getLabelContourMask(contours);
 	this->imTrain.setTo(Vec3b(0, 0, 255), contours);
 
-	startTrainingAnnotation();
 	//Wait til annotating is over
-	waitKey();
+	startTrainingAnnotation();
 	//Annotating is over
 	setMouseCallback(trainingWindowName, nullptr);
 
-	if (spatialMomentumEnabled) {
+	if (temporalMomentumEnabled) {
 		//Paint prevForegroundMap
-		Mat foregroundMask = Mat::zeros(imTrain.size(), CV_8UC1);
+		foregroundMask = Mat::zeros(imTrain.size(), CV_8UC1);
 		for (int i = 0; i < superpixelsTrain.size(); i++) {
 			if (superpixelsTrain[i].classLabel == 1) {
 				superpixelsTrain[i].colorize(foregroundMask, Vec3b(255, 255, 255));
@@ -297,9 +379,9 @@ void VideoSegmenter::loadTrainInputsFromFile(Mat& imTrain, const std::string &in
 		}
 		ifs.close();
 	}
-	if (spatialMomentumEnabled) {
+	if (temporalMomentumEnabled) {
 		//Paint prevForegroundMap
-		Mat foregroundMask = Mat::zeros(imTrain.size(), CV_8UC1);
+		foregroundMask = Mat::zeros(imTrain.size(), CV_8UC1);
 		for (int i = 0; i < superpixelsTrain.size(); i++) {
 			if (superpixelsTrain[i].classLabel == 1) {
 				superpixelsTrain[i].colorize(foregroundMask, Vec3b(255, 255, 255));
@@ -322,7 +404,7 @@ void VideoSegmenter::run(Mat& imTest)
 {
 	CV_Assert(imTest.data != nullptr);
 
-	if (spatialMomentumEnabled) {
+	if (temporalMomentumEnabled) {
 		if (prevForegroundMap.empty()) {
 			prevForegroundMap = Mat::zeros(imTest.size(), CV_32FC1);
 		}
@@ -343,11 +425,11 @@ void VideoSegmenter::run(Mat& imTest)
 	//Create Superpixel vector from slic
 	fillSuperpixelVector(slicTest, testLabels, superpixelsTest, this->imTest, histoNbin1d);
 	
-	Mat foregroundMask = Mat::zeros(imTest.size(), CV_8UC1);
+	foregroundMask = Mat::zeros(imTest.size(), CV_8UC1);
 	for (int i = 0; i < superpixelsTest.size(); i++) {
 		//float response = SVMClassifier->predict(superpixelsTest[i].getFeatMat());
 		float responseRaw = SVMClassifier->predict(superpixelsTest[i].getFeatMat(), noArray(), ml::StatModel::RAW_OUTPUT);
-		if (spatialMomentumEnabled) {
+		if (temporalMomentumEnabled) {
 			responseRaw += prevForegroundMap.at<uchar>(superpixelsTest[i].centroid)*0.25 - prevBackgroundMap.at<uchar>(superpixelsTest[i].centroid)*0.25;
 		}
 		uchar label = (responseRaw > 0 ? 1 : 2);
@@ -382,12 +464,9 @@ void VideoSegmenter::run(Mat& imTest)
 			}
 		}
 	}
-	if (spatialMomentumEnabled) {
-		//dilate(prevForegroundMask, prevForegroundMask, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)), Point(-1, -1), 3);
-		//distanceTransform(prevForegroundMask, prevForegroundMap, DIST_L2, 3, CV_32F);
+	if (temporalMomentumEnabled) {
 		erode(~foregroundMask, prevBackgroundMap, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)), Point(-1, -1), 2);
 		erode(foregroundMask, prevForegroundMap, getStructuringElement(CV_SHAPE_ELLIPSE, Size(7, 7)), Point(-1, -1), 2);
-		//normalize(prevForegroundMap, prevForegroundMap, -0.5, 0.5, NORM_MINMAX);
 	}
 }
 

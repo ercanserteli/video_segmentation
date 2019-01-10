@@ -1,0 +1,16 @@
+Dice score for bear: 0.939763
+Jaccard score for bear: 0.886773
+Dice score for blackswan: 0.858903
+Jaccard score for blackswan: 0.755001
+Dice score for bus: 0.729739
+Jaccard score for bus: 0.66234
+Dice score for cows: 0.887182
+Jaccard score for cows: 0.798909
+Dice score for hockey: 0.624666
+Jaccard score for hockey: 0.458674
+Dice score for lucia: 0.868662
+Jaccard score for lucia: 0.769062
+Dice score for rollerblade: 0.085988
+Jaccard score for rollerblade: 0.0642111
+Dice score for soccerball: 0.754487
+Jaccard score for soccerball: 0.613848
