@@ -1,10 +1,11 @@
 #include "VideoSegmentation.hpp"
+#include <opencv2/opencv.hpp>
 #include <opencv2/core/mat.hpp>
 #include <opencv2/ml.hpp>
 #include <filesystem>
+#include <fstream>
 
 namespace fs = std::filesystem;
-
 
 void runSingle(Mat& imageTrain, Mat& imageTest, const string& modelFilePath = "", const string& trainingRoisFilePath = "")
 {
@@ -211,8 +212,13 @@ void testDavis(const string& name , const string& modelFilePath = "", int superp
 	}
 }
 
+struct Scores {
+	float dice;
+	float jaccard;
+};
 // Calculates and prints Dice and Jaccard scores on results of a DAVIS test
-float calculateScores(const string& name) {
+Scores calculateScores(const string& name) {
+	Scores result = {};
 	char truthSequencePattern[260];
 	char predictedSequencePattern[260];
 
@@ -223,7 +229,7 @@ float calculateScores(const string& name) {
 	VideoCapture pred(predictedSequencePattern);
 
 	if (!truth.isOpened() || !pred.isOpened())  // check if we succeeded
-		return -1;
+		return result;
 
 	Mat truthFrame, predFrame;
 	float totalDice = 0, totalJaccard = 0;
@@ -259,20 +265,24 @@ float calculateScores(const string& name) {
 		totalJaccard += jaccard;
 	}
 
-	float meanDice = totalDice / frameCount;
-	float meanJaccard = totalJaccard / frameCount;
-	cout << "Dice score for " << name << ": " << meanDice << endl;
-	cout << "Jaccard score for " << name << ": " << meanJaccard << endl;
+	result.dice = totalDice / frameCount;
+	result.jaccard = totalJaccard / frameCount;
+	cout << "Dice score for " << name << ": " << result.dice << endl;
+	cout << "Jaccard score for " << name << ": " << result.jaccard << endl;
+	return result;
 }
 
 // Runs tests on every sample in the DAVIS dataset
 void runDavisTests() {
+	ofstream ofs("scores.txt", ofstream::out);
 	for (const auto & entry : fs::directory_iterator("C:\\images\\DAVIS\\JPEGImages\\480p")) {
 		string name = entry.path().filename().generic_string();
-		cout << "Testing on " << entry.path().filename().generic_string() << endl;
-		testDavis(name);
-		calculateScores(name);
+		//cout << "Testing on " << entry.path().filename().generic_string() << endl;
+		//testDavis(name);
+		Scores scores = calculateScores(name);
+		ofs << scores.dice << "\t" << scores.jaccard << endl;
 	}
+	ofs.close();
 	getchar();
 }
 
